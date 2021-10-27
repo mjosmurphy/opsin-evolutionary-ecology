@@ -1,0 +1,426 @@
+---
+title: "Coarse_analyses"
+author: "Matthew Murphy"
+date: "10/27/2021"
+output: html_document
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# this is how you set a working directory in R Markdown
+knitr::opts_knit$set(root.dir = "~/Research/Data/meta-analysis")
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r lib_load}
+# tools to generate phylogenetic tree
+library(rotl)
+library(ape)
+library(phytools)
+library(phylolm)
+library(geiger)
+
+# tool(s) for stat analysis
+library(lawstat)
+library(PMCMRplus)
+
+# tool(s) to plot models
+library(vioplot)
+library(ggplot2)
+library(latex2exp)
+
+# piping and tidy
+library(magrittr)
+library(data.table)
+#library(gtools)
+```
+
+In the following chunk, I read in the data frame. The shortest, longest, and range of opsin maxima were imported in numeric form; however, pGLS requires that the dependent variable be entered in integer form. I converted these three columns to integer form using the function as.integer() (baseR).
+
+fixed wide_data manually (some missing data)
+
+```{r read_data2}
+wide_data <- read.csv(file = '~/Research/Data/meta-analysis/wide_data_102021.csv', 
+                      header = T,
+                      stringsAsFactors = F)
+
+otts_excluded_df <- read.csv(file = '~/Research/Data/meta-analysis/excluded_ottids_processed.csv', 
+                          header = T,
+                          stringsAsFactors = T)
+otts_excluded <- as.character(otts_excluded_df$species_ottid)
+```
+
+### Coarse analysis
+
+```{r }
+# get dependent variables
+dependent_variables <- c('o_max', 'o_min', 'o_range')
+
+for(d in dependent_variables){
+  # histogram
+  hist(wide_data[,d],
+       main = paste0('histogram of ', d),
+       xlab = d)
+  
+  # check for normal distribution
+  print(paste0('test for normality: ',d))
+  print(shapiro.test(wide_data[,d]))
+}
+```
+
+Create independent variable groups for producing violin plots, 
+getting stat info for each combination of independent variables
+
+```{r }
+invertebrate <- wide_data[,'invertebrate']
+Taxon <- character()
+
+i=1
+while(i <= nrow(wide_data)){
+if(invertebrate[i] == 'Y'){
+  Taxon[i] <- 'Invertebrate'
+} else {
+  Taxon[i] <- 'Vertebrate'
+}
+  i=i+1
+}
+rm(i)
+
+Habitat <- character()
+terrestrial <- wide_data[, 'terrestrial']
+
+i=1
+while(i <= nrow(wide_data)){
+if(terrestrial[i] == 'Y'){
+  Habitat[i] <- 'Terrestrial'
+} else {
+  Habitat[i] <- 'Aquatic'
+}
+  i=i+1
+}
+rm(i)
+  
+independent_variables <- paste(Habitat, Taxon, sep = ' ')
+```
+
+Bind this to wide_data
+```{r }
+wide_data <- cbind(wide_data, independent_variables)
+
+wide_data <- wide_data[-which(wide_data$o_min < 200),]
+
+rm(independent_variables)
+```
+
+```{r meanSdN}
+wide_data_DT <- setDT(wide_data)
+
+wide_data_DT[,list(m_min=mean(o_min), 
+                   sd_min=sd(o_min),
+                   m_max=mean(o_max),
+                   sd_max=sd(o_max),
+                   m_range=mean(o_range),
+                   sd_range=sd(o_range)), 
+             by=independent_variables]
+
+wide_data_DT[,list(m_min=mean(o_min), 
+                   sd_min=sd(o_min),
+                   m_max=mean(o_max),
+                   sd_max=sd(o_max),
+                   m_range=mean(o_range),
+                   sd_range=sd(o_range)), 
+             by=terrestrial]
+
+wide_data_DT[,list(m_min=mean(o_min), 
+                   sd_min=sd(o_min),
+                   m_max=mean(o_max),
+                   sd_max=sd(o_max),
+                   m_range=mean(o_range),
+                   sd_range=sd(o_range)), 
+             by=invertebrate]
+
+table(wide_data$independent_variables)
+```
+
+```{r doTheStats}
+wide_data <- setDF(wide_data)
+for(d in dependent_variables){
+  print(toupper(d))
+  result <- glm(wide_data[,d] ~ wide_data$invertebrate * wide_data$terrestrial)
+  print(summary(result))
+}
+```
+
+```{r makeTheFigures}
+colors = c('#009ACD','#009ACD','#228B22','#228B22')
+l = c('Aquatic \n Invertebrate', 
+      'Aquatic \n Vertebrate', 
+      'Terrestrial \n Invertebrate',
+      'Terrestrial \n Vertebrate')
+
+for(d in dependent_variables){
+  
+  {if(d == 'o_max') ylabel <- paste("Longest", '\t', "$\\lambda_{max}$", '(nm)', sep = ' ')}
+  {if(d == 'o_min') ylabel <- paste("Shortest", '\t', "$\\lambda_{max}$", '(nm)', sep = ' ')}
+  {if(d == 'o_range') ylabel <- paste("$\\lambda_{max}$",'\t', "Range", '(nm)', sep = ' ')}
+  
+p <- ggplot(data = wide_data, aes(x = independent_variables, 
+                                  y = .data[[d]], 
+                                  fill = independent_variables)) +
+     geom_violin(scale = 'width') +
+     scale_fill_manual(values = colors, aesthetics = 'fill') +
+     theme_classic(base_size = 14) +
+     geom_boxplot(width = 0.05, color = 'black', fill = 'white') + 
+     theme(legend.position = 'none')
+
+if(d !='o_range'){
+  p <- p +
+    scale_y_continuous(limits = c(0,850), n.breaks = 8) +
+    scale_x_discrete(labels = l) +
+    labs(x = 'Habitat', y = TeX(ylabel))
+}
+
+if(d == 'o_max'){
+p <- p +
+  geom_segment(aes(y = 700, x = 1, yend = 700, xend = 2)) +
+  geom_segment(aes(y = 700, x = 3, yend = 700, xend = 4)) +
+  geom_segment(aes(y = 750, x = 1.5, yend = 750, xend = 3.5)) +
+  geom_segment(aes(y = 700, x = 1.5, yend = 750, xend = 1.5)) +
+  geom_segment(aes(y = 700, x = 3.5, yend = 750, xend = 3.5)) +
+    # significance asterices
+  annotate('text', y = 760, x = 2.5, label = '*', size = 10)
+}
+
+if(d == 'o_min'){
+ p <- p +
+  geom_segment(aes(y = 700, x = 1, yend = 700, xend = 2)) +
+  geom_segment(aes(y = 700, x = 3, yend = 700, xend = 4)) +
+  geom_segment(aes(y = 750, x = 1.5, yend = 750, xend = 3.5)) +
+  geom_segment(aes(y = 700, x = 1.5, yend = 750, xend = 1.5)) +
+  geom_segment(aes(y = 700, x = 3.5, yend = 750, xend = 3.5)) +
+   
+  # significance asterices
+  annotate('text', y = 760, x = 2.5, label = '*', size = 10)
+}
+
+if(d=='o_range'){
+  p <- p +
+    scale_y_continuous(limits = c(0,550), n.breaks = 10) +
+    scale_x_discrete(labels = l) +
+    labs(x = 'Habitat', y = TeX(ylabel)) +
+    
+  geom_segment(aes(y = 375, x = 1, yend = 375, xend = 2)) +
+  geom_segment(aes(y = 375, x = 3, yend = 375, xend = 4)) +
+  geom_segment(aes(y = 400, x = 1.5, yend = 400, xend = 3.5)) +
+  geom_segment(aes(y = 375, x = 1.5, yend = 400, xend = 1.5)) +
+  geom_segment(aes(y = 375, x = 3.5, yend = 400, xend = 3.5)) +
+
+  geom_segment(aes(y = 450, x = 1, yend = 450, xend = 3)) +
+  geom_segment(aes(y = 475, x = 2, yend = 475, xend = 4)) +
+  geom_segment(aes(y = 450, x = 1.5, yend = 500, xend = 1.5)) +
+  geom_segment(aes(y = 475, x = 3.5, yend = 500, xend = 3.5)) +
+  geom_segment(aes(y = 500, x = 1.5, yend = 500, xend = 3.5)) +    
+    
+  # significance asterices
+  annotate('text', y = 410, x = 2.5, label = '*', size = 10) +
+  annotate('text', y = 510, x = 2.5, label = '*', size = 10)    
+}
+
+filename <- paste0('~/Research/Data/meta-analysis/',d,'coarse-','including_dropped_otts','.svg')
+ggsave(filename = filename, device = 'svg', width=7.29, height=4.5, dpi=300)
+print(p)
+}
+```
+
+## With dropped otts
+```{r }
+# get genus and species from otts
+
+genus_species_drop_matrix <- stringr::str_split(otts_excluded,pattern = '_',simplify = T)
+genus_species_drop <- paste(genus_species_drop_matrix[,1], genus_species_drop_matrix[,2],sep = '_')
+```
+
+```{r }
+wide_data_dropped <- wide_data[-which(wide_data$genus_species %in% genus_species_drop),]
+```
+
+```{r meanSdN2}
+wide_data_dropped <- setDT(wide_data_dropped)
+
+wide_data_dropped[,list(m_min=mean(o_min), 
+                   sd_min=sd(o_min),
+                   m_max=mean(o_max),
+                   sd_max=sd(o_max),
+                   m_range=mean(o_range),
+                   sd_range=sd(o_range)), 
+             by=independent_variables]
+
+wide_data_dropped[,list(m_min=mean(o_min), 
+                   sd_min=sd(o_min),
+                   m_max=mean(o_max),
+                   sd_max=sd(o_max),
+                   m_range=mean(o_range),
+                   sd_range=sd(o_range)), 
+             by=invertebrate]
+
+
+wide_data_dropped[,list(m_min=mean(o_min), 
+                   sd_min=sd(o_min),
+                   m_max=mean(o_max),
+                   sd_max=sd(o_max),
+                   m_range=mean(o_range),
+                   sd_range=sd(o_range)), 
+             by=terrestrial]
+
+table(wide_data_dropped$independent_variables)
+```
+
+```{r }
+wide_data_dropped <- wide_data_dropped[-which(wide_data_dropped[,'tip_name'] == ''),]
+```
+
+```{r }
+tipnames_final <- character()
+
+i=1
+for(t in wide_data_dropped$tip_name){
+  #print(t)
+  split <- stringr::str_split(t, pattern = '_', simplify = T)
+  splitlen <- length(split)
+  #print(splitlen)
+  split[splitlen] <- paste0('ott',split[splitlen])
+  #print(split[splitlen])
+  final <- paste(split, collapse = '_')
+  #print(final)
+  tipnames_final[i] <- final
+  i=i+1
+}
+```
+
+```{r }
+wide_data_dropped <- as.data.frame(wide_data_dropped)
+row.names(wide_data_dropped) <- tipnames_final
+```
+
+```{r doTheStats2}
+wide_data_dropped <- setDF(wide_data_dropped)
+for(d in dependent_variables){
+  print(toupper(d))
+  result <- glm(wide_data_dropped[,d] ~ wide_data_dropped$invertebrate * wide_data_dropped$terrestrial)
+  print(summary(result))
+}
+```
+
+```{r makeTheFigures2}
+
+colors = c('#009ACD','#009ACD','#228B22','#228B22')
+l = c('Aquatic \n Invertebrate', 
+      'Aquatic \n Vertebrate', 
+      'Terrestrial \n Invertebrate',
+      'Terrestrial \n Vertebrate')
+
+for(d in dependent_variables){
+  
+  {if(d == 'o_max') ylabel <- paste("Longest", '\t', "$\\lambda_{max}$", '(nm)', sep = ' ')}
+  {if(d == 'o_min') ylabel <- paste("Shortest", '\t', "$\\lambda_{max}$", '(nm)', sep = ' ')}
+  {if(d == 'o_range') ylabel <- paste("$\\lambda_{max}$",'\t', "Range", '(nm)', sep = ' ')}
+  
+p <- ggplot(data = wide_data_dropped, aes(x = independent_variables, 
+                                  y = .data[[d]], 
+                                  fill = independent_variables)) +
+     geom_violin(scale = 'width') +
+     scale_fill_manual(values = colors, aesthetics = 'fill') +
+     theme_classic(base_size = 14) +
+     geom_boxplot(width = 0.05, color = 'black', fill = 'white') + 
+     theme(legend.position = 'none')
+
+if(d !='o_range'){
+  p <- p +
+    scale_y_continuous(limits = c(0,850), n.breaks = 8) +
+    scale_x_discrete(labels = l) +
+    labs(x = 'Habitat', y = TeX(ylabel))
+}
+
+if(d == 'o_max'){
+p <- p +
+  geom_segment(aes(y = 700, x = 1, yend = 700, xend = 2)) +
+  geom_segment(aes(y = 700, x = 3, yend = 700, xend = 4)) +
+  geom_segment(aes(y = 750, x = 1.5, yend = 750, xend = 3.5)) +
+  geom_segment(aes(y = 700, x = 1.5, yend = 750, xend = 1.5)) +
+  geom_segment(aes(y = 700, x = 3.5, yend = 750, xend = 3.5)) +
+    # significance asterices
+  annotate('text', y = 760, x = 2.5, label = '*', size = 10)
+}
+
+if(d=='o_range'){
+  p <- p +
+    scale_y_continuous(limits = c(0,550), n.breaks = 10) +
+    scale_x_discrete(labels = l) +
+    labs(x = 'Habitat', y = TeX(ylabel)) +
+    
+  geom_segment(aes(y = 375, x = 1, yend = 375, xend = 2)) +
+  geom_segment(aes(y = 375, x = 3, yend = 375, xend = 4)) +
+  geom_segment(aes(y = 400, x = 1.5, yend = 400, xend = 3.5)) +
+  geom_segment(aes(y = 375, x = 1.5, yend = 400, xend = 1.5)) +
+  geom_segment(aes(y = 375, x = 3.5, yend = 400, xend = 3.5)) +
+    
+  # significance asterices
+  annotate('text', y = 410, x = 2.5, label = '*', size = 10)
+}
+
+filename <- paste0('~/Research/Data/meta-analysis/',d,'coarse-','without_dropped_otts','.svg')
+ggsave(filename = filename, device = 'svg', width=7.29, height=4.5, dpi=300)
+print(p)
+}
+```
+
+## Phylogenetic models
+
+```{r }
+tree <- ape::read.tree(file = 'test_phylo2_093021')
+tree <- phytools::bind.tip(tree,
+                           tip.label = 'Saccharomyces_cerevisiae_ottid5262624',
+                           edge.length = NULL,
+                           where = NULL,
+                           position = 0)
+tree <- ape::root(phy = tree,
+                  outgroup = 'Saccharomyces_cerevisiae_ottid5262624')
+treeBrLen <- ape::compute.brlen(tree)
+treeDicho <- ape::multi2di(treeBrLen)
+missing <- geiger::name.check(phy = treeDicho,
+                              data = wide_data_dropped)
+treeFinal <- ape::drop.tip(phy = treeDicho,
+                           tip = missing$tree_not_data)
+
+dataFinal <- wide_data_dropped[-which(rownames(wide_data_dropped) %in% missing$data_not_tree),]
+```
+
+Now that a rooted tree with branch lengths has been created I can ...
+The following chunks could easily be wrapped into a set of loop functions. For ease of immediate accessability I have not done so.
+
+```{r biome_by_taxon}
+print('Long')
+print(summary(phylolm::phylolm(formula = as.integer(o_max) ~ terrestrial * invertebrate, 
+                  data = dataFinal, 
+                  phy = treeFinal, 
+                  boot = 100)))
+
+print('Short')
+print(summary(phylolm::phylolm(formula = as.integer(o_min) ~ terrestrial * invertebrate, 
+                  data = dataFinal, 
+                  phy = treeFinal, 
+                  boot = 100)))
+
+print('Range')
+print(summary(phylolm::phylolm(formula = as.integer(o_range) ~ terrestrial * invertebrate, 
+                  data = dataFinal, 
+                  phy = treeFinal, 
+                  boot = 100)))
+```

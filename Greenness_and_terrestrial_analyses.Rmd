@@ -1,0 +1,570 @@
+---
+title: "Greenness_and_terrestrial_analyses"
+author: "Matthew Murphy"
+date: "10/27/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+
+```{r lib_load}
+# tools to generate phylogenetic tree
+library(rotl)
+library(ape)
+library(phytools)
+library(phylolm)
+library(geiger)
+
+# tool(s) for stat analysis
+library(lawstat)
+library(PMCMRplus)
+
+# tool(s) to plot models
+library(vioplot)
+library(ggplot2)
+library(latex2exp)
+
+# piping and tidy
+library(magrittr)
+#library(gtools)
+```
+
+```{r }
+load(file = 'dropped_species_ottid')
+```
+       
+```{r }
+# make lambda-max expression
+l_max <- expression(lambda['max'])
+```
+## Make phylogenetic pipeline function
+
+This is the pipeline that I used for creating the phylogenetic trees used in my analyses.
+It requires the ape, phytools, and geiger packages.
+
+```{r phyloPipeline}
+phyloPipeline <- function(phy, dataframe, outgroup){
+  origTree <- ape::read.tree((file=phy))
+  treeTipBind <- phytools::bind.tip(origTree,
+                                    tip.label = outgroup,
+                                    edge.length = NULL,
+                                    where = NULL,
+                                    position = 0)
+  treeRooted <- ape::root(phy = treeTipBind,
+                          outgroup = outgroup)
+  treeWithBranchLengths <- ape::compute.brlen(treeRooted)
+  treeDichotomous <- ape::multi2di(treeWithBranchLengths)
+  missing <- geiger::name.check(phy = treeDichotomous,
+                                data = dataframe)
+  treeFinal <- ape::drop.tip(phy = treeDichotomous,
+                             tip = missing$tree_not_data)
+  
+  return(treeFinal)
+}
+```
+
+## Import datasets
+
+I manually reclassified and coded the (binary) habitat data.
+This data set lacks the invertebrate/vertebrate binary.
+```{r import_data}
+dir = "~/Research/Data/meta-analysis/finalized_data/"
+setwd(dir = dir)
+aquatic <- read.csv(file = '~/Research/Data/meta-analysis/finalized_data/aquatic_final.csv', 
+                    header = T, 
+                    stringsAsFactors = T)
+terrestrial <- read.csv(file = 'terrestrial_final.csv', 
+                        header = T, 
+                        stringsAsFactors = T)
+otts_excluded <- read.csv(file = '~/Research/Data/meta-analysis/excluded_ottids_processed.csv', 
+                          header = T,
+                          stringsAsFactors = T)
+otts_excluded$d_min <- as.numeric(otts_excluded$d_min)
+otts_excluded$d_max <- as.numeric(otts_excluded$d_max)
+otts_excluded$d_range <- as.numeric(otts_excluded$d_range)
+rownames(aquatic) <- aquatic[["species_ottid"]]
+rownames(terrestrial) <- terrestrial[["species_ottid"]]
+rownames(otts_excluded) <- otts_excluded[["species_ottid"]]
+```
+## Adding excluded otts back in to data
+```{r reAddOTTs}
+d_avg <- (otts_excluded[,'d_min'] + otts_excluded[,'d_max'])/2
+otts_excluded <- cbind(otts_excluded[,c(1:6)],d_avg,otts_excluded[,c(7:21)])
+
+terrestrial_o <- rbind(terrestrial, otts_excluded[which(otts_excluded$habitat == 'forest'),])
+aquatic_o <- rbind(aquatic, otts_excluded[-4,])
+```
+
+## Remove NAs from data
+
+Phylogenetic analyses do not work correctly when there are NAs in the dummy variables.
+I will need to remove them before starting phylogenetically controlled work
+
+```{r removeNAs}
+aquatic_RowsWithoutHabitatData <- which(is.na(aquatic$limnetic))
+aquatic_naless <- aquatic[-aquatic_RowsWithoutHabitatData, ]
+
+dummyVariables_Summed <- terrestrial[,c('forest','intermediate','open')] %>% apply(MARGIN = 1, FUN = sum)
+            
+dummyVariables_naless <- which(dummyVariables_Summed >= 0 )
+
+terrestrial_naless <- terrestrial[dummyVariables_naless,]
+
+rm(aquatic_RowsWithoutHabitatData, dummyVariables_Summed, dummyVariables_naless)
+```
+
+## Create combined dataset (aquatic and terrestrial)
+I combined the two data sets into one, which has all dummy variables
+
+```{r cbindterrestrial_aquaticfixed}
+aquaterra <- rbind(aquatic_naless, terrestrial_naless)
+```
+
+### Get standard variables
+```{r depvars}
+
+# creating a vector of commonly used dependent variable names 
+# allowing the user to iterate across them
+
+dependent_variables <- c('o_max','o_min','o_range')
+```
+
+
+## Aquatic data
+
+### Exploratory statistics
+```{r aquaticExploratoryStats}
+
+for(d in dependent_variables){
+  print(d)
+  aquatic[[d]] %>% hist(main = paste('Histogram of', d, 'include dropped otts', sep = ' '))
+  aquatic[[d]] %>% shapiro.test() %>% print()
+  
+  aquatic_naless[[d]] %>% hist(main = paste('Histogram of', d, 'NA-less', sep = ' '))
+  aquatic_naless[[d]] %>% shapiro.test() %>% print()
+}
+```
+
+#### Pretty Depth Plots
+```{r }
+ylabels <- c('Longest', 'Shortest', 'Range of')
+xlabels <- c('Minimum', 'Maximum', 'Average')
+independent_variables <- c('d_avg','d_min','d_max')
+for(i in independent_variables){
+  iter <- 1
+  for(d in dependent_variables){
+    ylabel <- paste0(ylabels[[iter]], ' ', "$\\lambda_{max}$") #LaTeX y-axis label
+    data <- aquatic_o[,c(i,d)] # Get columns to use for printing graph
+    data <- data[complete.cases(data),] # Remove NAs from graph (won't print correctly otherwise)
+
+    p <- ggplot(data = NULL, aes(x = data[[i]], y = data[[d]])) +
+      geom_point(alpha = 0.75, color = 'black') +
+      theme_classic() + # No gray background or graph grid
+      {if(d != 'o_range')scale_y_continuous(limits = c(200, 500), breaks = seq(200,500,50))} +
+      {if(d == 'o_range')scale_y_continuous(limits = c(0, 200), breaks = seq(0, 200, 25))} +
+      {if(i == 'd_min')scale_x_continuous(limits = c(0, 500), breaks = seq(0, 500, 100))} +
+      {if(i == 'd_max')scale_x_continuous(limits = c(0, 4500), breaks = seq(0, 4500, 500))} +
+      {if(i == 'd_avg')scale_x_continuous(limits = c(0, 2500), breaks = seq(0, 2500, 500))} +
+  # print axis labels
+      {if(i == 'd_avg')labs(x = 'Average Depth  (m)')} +
+      {if(i == 'd_min')labs(x = 'Minimum Depth  (m)')} +
+      {if(i == 'd_max')labs(x = 'Maximum Depth  (m)')} +
+      labs(y = TeX(ylabel)) +
+  # calculate and draw regression line
+      geom_smooth(method = glm, se = F)
+
+  # visualization in HTML
+      print(p)
+      print(paste0('formula =', i, '~', d))
+      print(summary(glm(formula = data[[i]] ~ data[[d]])))
+  # save copy to disk
+      file <- paste0(dir,'/','Depth_',d,'_by_',i,'include-dropped-otts.svg')
+      ggsave(file = file, device = 'svg')
+      iter <- iter + 1
+  }
+}
+# cleanup
+rm(i, d, iter, xlabels, ylabels, ylabel, file, data)
+```
+
+### Phylolm for visual sensitivities as a function of depth
+```{r getPhylogenyForDepths}
+phylogenies <- c('phyDepthMin_Final', 'phyDepthMax_Final', 'phyDepth_Final')
+
+r <- 1
+for(i in independent_variables){
+  aquatic_RowsWithoutDepth <- which(is.na(aquatic_naless[,i]))
+  depth_naless <- aquatic_naless[-aquatic_RowsWithoutDepth, ]
+  
+  finalDepthTree <- phyloPipeline(phy = 'test_phylo2_093021',
+                                  dataframe = depth_naless,
+                                  outgroup = 'Saccharomyces_cerevisiae_ottid5262624')
+  assign(x = phylogenies[r], value = finalDepthTree)
+  assign(x = paste0('aquatic_', i, '_naless'), value = depth_naless)
+  
+  for(d in dependent_variables){
+  print(summary(phylolm(depth_naless[[d]] ~ depth_naless[[i]],
+                        data = depth_naless,
+                        phy = finalDepthTree,
+                        boot = 100)))
+  }
+  r <- r+1
+  rm(aquatic_RowsWithoutDepth, depth_naless, finalDepthTree)
+}
+```
+
+
+## Terrestrial data
+### Exploratory statistics
+```{r}
+for(d in dependent_variables){
+  cat(d)
+  terrestrial[[d]] %>% hist(main = paste('Histogram of', d, sep = ' '))
+  terrestrial[[d]] %>% shapiro.test() %>% print()
+  
+  terrestrial_o[[d]] %>% hist(main = paste('Histogram of', d, 'no dropped OTTs', sep = ' '))
+  terrestrial_o[[d]] %>% shapiro.test() %>% print()  
+
+  cat('NO NAs')
+  terrestrial_naless[[d]] %>% hist(main = paste('Histogram of', d, 'NA-less', sep = ' '))
+  terrestrial_naless[[d]] %>% shapiro.test() %>% print()
+  
+  cat('\n\n\n')
+  }
+```
+
+```{r terrestrialNMeanSD}
+habitat <- unique(terrestrial_naless[,'habitat'])
+levels(terrestrial_naless[,'habitat']) <- c('closed.intermediate','open.specialist','terrestrial.generalist')
+terrestrial_o[which(terrestrial_o$habitat == 'forest'),'habitat'] <- 'closed.intermediate'
+terrestrial_o[,'habitat'] <- as.character(terrestrial_o[,'habitat'])
+terrestrial_o[,'habitat'] <- as.factor(terrestrial_o[,'habitat'])
+levels(terrestrial_o[,'habitat']) <- c('closed.intermediate','open.specialist','terrestrial.generalist')
+
+for(d in dependent_variables){
+  print(d)
+
+  sdev <- with(terrestrial_naless,
+               aggregate(terrestrial_naless[,d],
+                         by = list(category = habitat),
+                         FUN = sd))
+  m <- with(terrestrial_naless,
+            aggregate(terrestrial_naless[,d],
+                      by = list(category = habitat),
+                      FUN = mean))
+  summaryStats <- cbind(as.data.frame(habitat),m$x, sdev$x)
+  colnames(summaryStats) <- c(paste0(d, ': habitat'),'mean','sdev')
+
+  print(summaryStats)
+  rm(sdev, m, summaryStats)
+}
+rm(d)
+table(terrestrial_naless[,'habitat'])
+
+print('INCLUDED DROPPED OTTS')
+## without dropped otts
+for(d in dependent_variables){
+  print(d)
+
+  sdev <- with(terrestrial_o,
+               aggregate(terrestrial_o[,d],
+                         by = list(category = habitat),
+                         FUN = sd))
+  m <- with(terrestrial_o,
+            aggregate(terrestrial_o[,d],
+                      by = list(category = habitat),
+                      FUN = mean))
+  summaryStats <- cbind(as.data.frame(habitat),m$x, sdev$x)
+  colnames(summaryStats) <- c(paste0(d, ': habitat'),'mean','sdev')
+
+  print(summaryStats)
+  rm(sdev, m, summaryStats)
+}
+rm(d)
+table(terrestrial_naless[,'habitat'])
+print('INCLUDED DROPPED OTTS')
+table(terrestrial_o[,'habitat'])
+```
+### Quick terrestrial plots
+```{r quickTerrestrialPlots}
+for(d in dependent_variables){
+  plot(terrestrial_naless[[d]] ~ terrestrial_naless[['habitat']],
+       xlab = 'habitat',
+       ylab = d)
+  plot(terrestrial_o[[d]] ~ terrestrial_o[['habitat']],
+      xlab = 'habitat',
+      ylab = d,
+      main = 'INCLUDED DROPPED OTTS')
+}
+```
+### Pretty terrestrial plots
+
+For pretty terrestrial plots, see versions prior to 9-16-21
+
+### Statistical analyses for terrestrial data
+```{r terrstrialStats}
+for(d in dependent_variables){
+  kruskal <- (kruskal.test(terrestrial_naless[,d] ~ terrestrial_naless[,'habitat']))
+  cat(paste('KRUSKAL-WALLIS TEST: \n EFFECT OF HABITAT ON:', d, sep = ' '))
+  print(kruskal)
+  cat('\n\n\n')
+  
+    kruskal <- (kruskal.test(terrestrial_o[,d] ~ terrestrial_o[,'habitat']))
+  cat(paste('KRUSKAL-WALLIS TEST: \n EFFECT OF HABITAT ON:', d, sep = ' '))
+  cat('\n')
+  cat(paste0('INCLUDING DROPPED OTTS'))
+  print(kruskal)
+  cat('\n\n\n')
+}
+```
+
+
+
+## Combined
+```{r }
+aquaterra_o <- rbind(aquatic_o, terrestrial_o)
+
+write.csv(aquaterra_o, file = '~/Research/Data/meta-analysis/finalized_data/aquaterra_with_dropped_otts', row.names = F)
+```
+### Remove habitat generalists from analysis
+```{r removeGeneralists}
+# rows that describe generalists have NAs in the habitat column
+aquaterra_generalist <- which(is.na(aquaterra$habitat))
+aquaterra_specialist <- aquaterra[-aquaterra_generalist,]
+rm(aquaterra_generalist)
+
+aquaterra_generalist <- which(aquaterra_specialist$habitat == 'terrestrial.generalist')
+aquaterra_specialist <- aquaterra_specialist[-aquaterra_generalist,]
+
+aquaterra_specialist[,'habitat'] <- as.character(aquaterra_specialist[,'habitat'])
+aquaterra_specialist[,'habitat'] <- as.factor(aquaterra_specialist[,'habitat'])
+
+aquaterra_ogeneralist <- which(is.na(aquaterra_o$habitat))
+aquaterra_ospecialist <- aquaterra_o[-aquaterra_ogeneralist,]
+rm(aquaterra_ogeneralist)
+
+aquaterra_ogeneralist <- which(aquaterra_ospecialist$habitat == 'terrestrial.generalist')
+aquaterra_ospecialist <- aquaterra_ospecialist[-aquaterra_ogeneralist,]
+
+aquaterra_ospecialist[,'habitat'] <- as.character(aquaterra_ospecialist[,'habitat'])
+aquaterra_ospecialist[,'habitat'] <- as.factor(aquaterra_ospecialist[,'habitat'])
+```
+### Reimport prebuilt phylogenetic tree
+```{r generate_tree}
+
+aquaTerraTree <- phyloPipeline(phy = 'test_phylo2_093021',
+                                     dataframe = aquaterra_specialist,
+                                     outgroup = 'Saccharomyces_cerevisiae_ottid5262624')
+
+# plot.phylo(x = aquaTerraTree, type = 'fan', cex = 0.1)
+```
+
+### Drop missing phylogenetic data
+```{r dropmissing_tips_data}
+missing <- geiger::name.check(phy = aquaTerraTree, data = aquaterra)
+
+# exclude data not in tree
+ exclude_rows <- which(row.names(aquaterra) %in% missing$data_not_tree)
+ aquaterraFinal <- aquaterra_specialist # [-exclude_rows,]
+
+ rm(missing, exclude_rows)
+```
+
+### Exploratory statistics
+```{r}
+for(d in dependent_variables){
+  hist(aquaterraFinal[[d]],
+       main = paste("Histogram of", d, sep = ' '),
+       xlab = paste(d))
+  print(paste('DEPENDENT VARIABLE:', toupper(d), sep = ' '))
+  shatest <- (shapiro.test(aquaterraFinal[[d]]))
+  print(shatest)
+  
+  print('INCLUDING DROPPED OTTS')
+  hist(aquaterra_ospecialist[[d]],
+       main = paste("Histogram of", d, ', including dropped otts', sep = ' '),
+       xlab = paste(d))
+  print(paste('DEPENDENT VARIABLE:', toupper(d), sep = ' '))
+  shatest <- (shapiro.test(aquaterra_o[[d]]))
+  print(shatest)
+}
+```
+
+```{r aquaterraNMeanSD}
+
+for(d in dependent_variables){
+  sdev <- with(aquaterra_specialist,
+               aggregate(aquaterra_specialist[,d],
+                         by = list(category = habitat),
+                         FUN = sd))
+  colnames(sdev) <- c(paste('DEPENDENT VARIABLE:',toupper(d),sep=' '),'SDEV')
+  m <- with(aquaterra_specialist,
+            aggregate(aquaterra_specialist[,d],
+                      by = list(category = habitat),
+                      FUN = mean))
+  final <- cbind(sdev,m[,2])
+  colnames(final)[3] <- 'MEAN'
+  print(sdev)
+  print(m)
+  print(final)
+#  rm(sdev, m, final)
+  
+  print('INCLUDING DROPPED OTTS')
+    sdev <- with(aquaterra_ospecialist,
+               aggregate(aquaterra_ospecialist[,d],
+                         by = list(category = habitat),
+                         FUN = sd))
+  colnames(sdev) <- c(paste('DEPENDENT VARIABLE:',toupper(d),sep=' '),'SDEV')
+  m <- with(aquaterra_ospecialist,
+            aggregate(aquaterra_ospecialist[,d],
+                      by = list(category = habitat),
+                      FUN = mean))
+  final <- cbind(sdev,m[,2])
+  colnames(final)[3] <- 'MEAN'
+  print(sdev)
+  print(m)
+  print(final)
+#  rm(sdev, m, final)
+}
+
+cat('SAMPLE SIZES')
+table(aquaterra_specialist[,'habitat'])
+cat('including dropped otts')
+table(aquaterra_ospecialist[,'habitat'])
+```
+
+### test for equality of variances
+```{r }
+for(d in dependent_variables){
+  print(levene.test(aquaterra_specialist[,d], group = aquaterra_specialist[,'habitat']))
+  
+  print('including droppsed otts')
+  
+  print(levene.test(aquaterra_ospecialist[,d], group = aquaterra_ospecialist[,'habitat']))
+}
+
+```
+
+### Get 5 number summaries, means and SDs
+#### need to incorporate?
+```{r mean_sd}
+aggregate(formula = o_max ~ habitat, data = aquaterra_ospecialist, FUN = 'mean')
+aggregate(formula = o_max ~ habitat, data = aquaterra_ospecialist, FUN = 'sd')
+
+aggregate(formula = o_min ~ habitat, data = aquaterra_ospecialist, FUN = 'mean')
+aggregate(formula = o_min ~ habitat, data = aquaterra_ospecialist, FUN = 'sd')
+
+aggregate(formula = o_range ~ habitat, data = aquaterra_ospecialist, FUN = 'mean')
+aggregate(formula = o_range ~ habitat, data = aquaterra_ospecialist, FUN = 'sd')
+# print('longest')
+# print(tapply(green.open$o_max, green.open$habitat, summary))
+```
+
+### Roughly visualize data
+```{r rough_viz}
+for(d in dependent_variables){
+  plot(aquaterra_specialist[,d] ~ aquaterra_specialist[,'habitat'],
+       ylab = paste(d),
+       xlab = 'Habitat')
+  
+  plot(aquaterra_ospecialist[,d] ~ aquaterra_ospecialist[,'habitat'], main = 'including dropped otts',
+       ylab = paste(d),
+       xlab = 'Habitat')
+}
+```
+
+### Pairwise tests
+```{r kruskalDwass}
+for(d in dependent_variables){
+  print(d)
+  response <- aquaterra_specialist[,d]
+  group <- aquaterra_specialist[, "habitat"]
+  kruskal_result <- kruskal.test(response ~ group)
+  print(kruskal_result)
+  if(kruskal_result$p.value<=0.05){
+    dwass_result <- PMCMRplus::dscfAllPairsTest(response ~ group)
+    print(dwass_result)
+#    print(summary(dwass_result))
+    print(dwass_result$statistic)
+  }
+  rm(response,group,kruskal_result,dwass_result)
+  
+  print('including dropped otts')
+  response <- aquaterra_ospecialist[,d]
+  group <- aquaterra_ospecialist[, "habitat"]
+  kruskal_result <- kruskal.test(response ~ group)
+  print(kruskal_result)
+  if(kruskal_result$p.value<=0.05){
+    dwass_result <- PMCMRplus::dscfAllPairsTest(response ~ group)
+    print(dwass_result)
+ #   print(summary(dwass_result))
+    print(dwass_result$statistic)
+  }
+  # rm(response,group,kruskal_result,dwass_result)
+}
+```
+
+### Correct by phylogeny
+
+```{r phylolm_max_terrestrialaquatic}
+print(summary(phylolm(o_max ~ coastal + lake.river + open,
+                      data = aquaterraFinal,
+                      phy = aquaTerraTree,
+                      boot =100)))
+
+# get open
+print(summary(phylolm(o_max ~ coastal + lake.river + closed_int,
+                      data = green.open,
+                      phy = green.open.brx,
+                      boot =100)))
+
+# get coastal
+print(summary(phylolm(o_max ~ open + fresh + closed_int,
+                      data = green.open,
+                      phy = green.open.brx,
+                      boot =100)))
+```
+
+```{r phylolm_min_terrestrialaquatic}
+print(summary(phylolm(o_min ~ coast + fresh + open,
+                      data = green.open,
+                      phy = green.open.brx,
+                      boot =100)))
+
+# get open
+print(summary(phylolm(o_min ~ coast + fresh + closed_int,
+                      data = green.open,
+                      phy = green.open.brx,
+                      boot =100)))
+
+# get coastal
+print(summary(phylolm(o_min ~ open + fresh + closed_int,
+                      data = green.open,
+                      phy = green.open.brx,
+                      boot =100)))
+```
+
+```{r phylolm_range_terrestrialaquatic}
+
+print(summary(phylolm(o_range ~ coast + fresh + open,
+                      data = green.open,
+                      phy = green.open.brx,
+                      boot =100)))
+
+# get open
+print(summary(phylolm(o_range ~ coast + fresh + closed_int,
+                      data = green.open,
+                      phy = green.open.brx,
+                      boot =100)))
+
+# get coastal
+# get open
+print(summary(phylolm(o_range ~ open + fresh + closed_int,
+                      data = green.open,
+                      phy = green.open.brx,
+                      boot =100)))
+```
